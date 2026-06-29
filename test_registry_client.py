@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import unittest
+from unittest import mock
+
+import httpx
+
+from doctor import app as doctor_app
+from doctor.registry_client import RegistryClient, RegistryClientConfig
+
+
+class RegistryClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_register_uses_official_header_and_expected_payload(self):
+        captured: dict = {}
+
+        async def core(request: httpx.Request) -> httpx.Response:
+            captured["request"] = request
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(200, json={"status": "healthy"})
+
+        client = RegistryClient(
+            RegistryClientConfig(
+                core_url="http://core.test",
+                api_key="secret",
+                service_host="doctor.internal",
+                service_port=8020,
+            ),
+            transport=httpx.MockTransport(core),
+        )
+        try:
+            registered = await client.register()
+        finally:
+            await client.stop()
+
+        self.assertTrue(registered)
+        self.assertEqual(
+            captured["request"].headers["X-Neron-API-Key"],
+            "secret",
+        )
+        self.assertNotIn("X-API-Key", captured["request"].headers)
+        self.assertEqual(
+            captured["payload"],
+            {
+                "service_name": "doctor",
+                "host": "doctor.internal",
+                "port": 8020,
+                "version": "0.1.0",
+                "status": "healthy",
+                "capabilities": ["diagnostics", "health_report"],
+                "metadata": {},
+            },
+        )
+
+    async def test_start_without_core_does_not_crash(self):
+        async def unavailable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("Core unavailable", request=request)
+
+        client = RegistryClient(
+            RegistryClientConfig(core_url="http://core.test"),
+            transport=httpx.MockTransport(unavailable),
+        )
+        try:
+            await client.start()
+            await asyncio.sleep(0.01)
+            self.assertFalse(client._registered)
+            self.assertIsNotNone(client._heartbeat_task)
+        finally:
+            await client.stop()
+
+    async def test_heartbeat_is_sent_periodically(self):
+        paths: list[str] = []
+
+        async def core(request: httpx.Request) -> httpx.Response:
+            paths.append(request.url.path)
+            return httpx.Response(200, json={"status": "healthy"})
+
+        client = RegistryClient(
+            RegistryClientConfig(
+                core_url="http://core.test",
+                heartbeat_interval=0.01,
+            ),
+            transport=httpx.MockTransport(core),
+        )
+        try:
+            await client.start()
+            await asyncio.sleep(0.035)
+        finally:
+            await client.stop()
+
+        self.assertEqual(paths[0], "/registry/register")
+        self.assertIn("/registry/heartbeat", paths[1:])
+
+    def test_environment_configuration(self):
+        env = {
+            "NERON_CORE_URL": "http://core.internal:8010/",
+            "NERON_API_KEY": "key",
+            "NERON_SERVICE_HOST": "doctor.internal",
+            "NERON_SERVICE_PORT": "9020",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            config = RegistryClientConfig.from_env()
+
+        self.assertEqual(config.core_url, "http://core.internal:8010")
+        self.assertEqual(config.api_key, "key")
+        self.assertEqual(config.service_host, "doctor.internal")
+        self.assertEqual(config.service_port, 9020)
+
+    async def test_doctor_lifespan_starts_and_stops_registry_client(self):
+        fake_client = mock.Mock()
+        fake_client.start = mock.AsyncMock()
+        fake_client.stop = mock.AsyncMock()
+
+        with mock.patch.object(
+            doctor_app.RegistryClient,
+            "from_env",
+            return_value=fake_client,
+        ):
+            async with doctor_app.lifespan(doctor_app.app):
+                fake_client.start.assert_awaited_once()
+                self.assertIs(
+                    doctor_app.app.state.registry_client,
+                    fake_client,
+                )
+
+        fake_client.stop.assert_awaited_once()
+
+
+if __name__ == "__main__":
+    unittest.main()
