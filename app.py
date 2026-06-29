@@ -15,7 +15,7 @@ from doctor.monitor import (
     get_all_services_status,
     get_all_journal_errors,
 )
-from doctor.registry_client import RegistryClient
+from server.common.registry.client import RegistryClient
 from doctor.runner import run_full_diagnosis, stream_diagnosis
 from fastapi.responses import StreamingResponse
 import json
@@ -35,7 +35,14 @@ async def lifespan(app: FastAPI):
     logger.info("Ollama        : %s", cfg.OLLAMA_URL)
     logger.info("Services      : %s", cfg.SYSTEMD_SERVICES)
     logger.info("Auth          : %s", "desactivee (dev)" if not cfg.API_KEY else "active")
-    registry_client = RegistryClient.from_env()
+    registry_client = RegistryClient(
+        service_name="doctor",
+        version="0.1.0",
+        host="localhost",
+        port=8020,
+        capabilities=["diagnostics", "health_report"],
+        metadata={},
+    )
     app.state.registry_client = registry_client
     await registry_client.start()
     logger.info("Doctor pret")
