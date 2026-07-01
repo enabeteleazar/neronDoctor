@@ -119,6 +119,15 @@ def analyze_all():
     }
 
 
+@app.get("/config", dependencies=AUTH)
+def active_config():
+    """Configuration active, sans exposer les valeurs sensibles."""
+    return {
+        name: "***MASKED***" if "KEY" in name or "SECRET" in name else value
+        for name, value in vars(cfg).items()
+    }
+
+
 @app.post("/fixes", dependencies=AUTH)
 def fixes():
     """Teste les services et applique les corrections si necessaire."""
