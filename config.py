@@ -79,6 +79,10 @@ class Config:
 
         # ── Auth ─────────────────────────────────────────────
         self.API_KEY: str = d.get("api_key", "")
+        self.AUTH_DEV_MODE: bool = (
+            os.getenv("NERON_DOCTOR_AUTH_DEV_MODE", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
         # ── Timeouts & retry ──────────────────────────────────
         timing = d.get("timing", {})

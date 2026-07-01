@@ -34,7 +34,14 @@ async def lifespan(app: FastAPI):
     logger.info("Server health : %s", cfg.SERVER_HEALTH_URL)
     logger.info("Ollama        : %s", cfg.OLLAMA_URL)
     logger.info("Services      : %s", cfg.SYSTEMD_SERVICES)
-    logger.info("Auth          : %s", "desactivee (dev)" if not cfg.API_KEY else "active")
+    logger.info(
+        "Auth          : %s",
+        "desactivee (dev explicite)"
+        if cfg.AUTH_DEV_MODE and not cfg.API_KEY
+        else "active"
+        if cfg.API_KEY
+        else "non configuree (fail-closed)",
+    )
     registry_client = RegistryClient(
         service_name="doctor",
         version="0.1.0",
