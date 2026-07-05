@@ -1,12 +1,14 @@
 # app/config.py
-# Configuration chargée depuis /etc/neron/neron.yaml (section "doctor:")
+# Configuration chargée depuis NERON_CONFIG (section "doctor:")
 # Fallback sur des valeurs par défaut si la clé est absente.
 
 import os
 import yaml
 from typing import Any
 
-YAML_PATH = os.getenv("NERON_CONFIG", "/etc/neron/neron.yaml")
+from common.paths import NERON_CONFIG, NERON_SERVER_DIR
+
+YAML_PATH = str(NERON_CONFIG)
 
 
 def _load_yaml(path: str) -> dict[str, Any]:
@@ -60,9 +62,9 @@ class Config:
 
         # ── Chemins ──────────────────────────────────────────
         paths = d.get("paths", {})
-        self.CORE_PATH: str = paths.get("core", "/etc/neron/core")
-        self.SERVER_PATH: str = paths.get("server", "/etc/neron/server")
-        self.LLM_PATH:    str = paths.get("llm",    "/etc/neron/llm")
+        self.CORE_PATH: str = paths.get("core", str(NERON_SERVER_DIR / "core"))
+        self.SERVER_PATH: str = paths.get("server", str(NERON_SERVER_DIR))
+        self.LLM_PATH:    str = paths.get("llm", str(NERON_SERVER_DIR / "llm"))
         self.LOG_DIR:     str = paths.get("logs",   "/var/log/neron")
 
         # ── Endpoints HTTP ───────────────────────────────────

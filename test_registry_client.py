@@ -48,8 +48,8 @@ class RegistryClientTests(unittest.IsolatedAsyncioTestCase):
         request, payload = captured[0]
         self.assertTrue(registered)
         self.assertEqual(
-            request.headers["X-Neron-API-Key"],
-            "secret",
+            request.headers["Authorization"],
+            "Bearer secret",
         )
         self.assertNotIn("X-API-Key", request.headers)
         self.assertEqual(
