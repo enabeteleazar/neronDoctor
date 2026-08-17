@@ -71,16 +71,32 @@ class Config:
         endpoints = d.get("endpoints", {})
         self.SERVER_HEALTH_URL: str = endpoints.get("server_health", "http://localhost:8010/health")
         self.SERVER_STATUS_URL: str = endpoints.get("server_status", "http://localhost:8010/status")
-        self.LLM_HEALTH_URL:    str = endpoints.get("llm_health",    "http://localhost:8765/llm/health")
+        # Adresse reelle du service llm (127.0.1.2), pas "localhost" — voir
+        # neron.server.yaml, noeud "llm". Localhost ne route pas vers les
+        # adresses de loopback dediees par service.
+        self.LLM_HEALTH_URL:    str = endpoints.get("llm_health",    "http://127.0.1.2:8765/llm/health")
         self.OLLAMA_URL:        str = endpoints.get("ollama",         "http://localhost:11434/api/tags")
 
         # ── Services systemd ──────────────────────────────────
+        # Noms alignes sur le gabarit neron@.service (unification du 28/07) :
+        # les cinq services applicatifs + ollama (unite hors gabarit, gere a part).
         self.SYSTEMD_SERVICES: list[str] = d.get(
-            "services", ["neron-server", "neron-llm", "ollama"]
+            "services",
+            [
+                "neron@core",
+                "neron@llm",
+                "neron@goal",
+                "neron@memory",
+                "neron@voice",
+                "ollama",
+            ],
         )
 
         # ── Auth ─────────────────────────────────────────────
-        self.API_KEY: str = d.get("api_key", "")
+        # Cle lue en priorite depuis l'environnement (secrets.env), jamais
+        # en clair dans neron.yaml qui est explicitement documente "sans
+        # secret". Repli sur l'ancien champ YAML pour compatibilite.
+        self.API_KEY: str = os.getenv("NERON_DOCTOR_API_KEY", "") or d.get("api_key", "")
         self.AUTH_DEV_MODE: bool = (
             os.getenv("NERON_DOCTOR_AUTH_DEV_MODE", "").strip().lower()
             in {"1", "true", "yes", "on"}

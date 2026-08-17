@@ -75,11 +75,13 @@ def apply_fixes(report: dict) -> list[dict]:
     tests = report.get("tests", {}) or {}
     monitor_services = (report.get("monitor", {}) or {}).get("services", {})
 
-    # Mapping simple des clés de tests vers services systemd
+    # Mapping simple des cles de tests vers services systemd.
+    # Noms alignes sur le gabarit neron@.service (unification du 28/07) —
+    # "neron-server"/"neron-llm" n'existent plus depuis cette date.
     key_to_service = {
-        "server_health": "neron-server",
-        "server_status": "neron-server",
-        "llm_health": "neron-llm",
+        "server_health": "neron@core",
+        "server_status": "neron@core",
+        "llm_health": "neron@llm",
     }
 
     to_restart = set()
