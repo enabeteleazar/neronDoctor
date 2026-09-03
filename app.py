@@ -130,7 +130,12 @@ def active_config():
 
 @app.post("/fixes", dependencies=AUTH)
 def fixes():
-    """Teste les services et applique les corrections si necessaire."""
+    """Applique les corrections — SUR DEMANDE EXPLICITE UNIQUEMENT.
+
+    Doctor analyse, Goal repare : le diagnostic periodique (POST /diagnose) ne
+    corrige plus rien. Cette route reste le seul point d'entree de la
+    reparation, borne par un delai de grace et un cooldown (doctor.fixer).
+    """
     tests  = test_services()
     report = {"tests": tests}
     result = apply_fixes(report)

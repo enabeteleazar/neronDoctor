@@ -107,6 +107,16 @@ class Config:
         self.HTTP_TIMEOUT:    int = _get(timing, "http_timeout",    5)
         self.FIX_RETRY_COUNT: int = _get(timing, "fix_retry_count", 3)
         self.FIX_RETRY_DELAY: int = _get(timing, "fix_retry_delay", 4)
+        # Garde-fous de redemarrage. Doctor analyse, Goal repare : quand une
+        # correction est tout de meme demandee explicitement, elle ne doit pas
+        # pouvoir degenerer en boucle.
+        # - grace : un service qui vient de demarrer n'est pas encore en faute,
+        #   il finit son demarrage. Sans cela Doctor tuait Core pendant son
+        #   boot (25 s de demarrage, 90 s d'arret) et l'empechait de repondre.
+        # - cooldown : deux redemarrages du meme service trop rapproches
+        #   signalent que le redemarrage ne resout rien.
+        self.FIX_GRACE_SECONDS:    int = _get(timing, "fix_grace_seconds",    120)
+        self.FIX_COOLDOWN_SECONDS: int = _get(timing, "fix_cooldown_seconds", 600)
         self.JOURNAL_LINES:   int = _get(timing, "journal_lines",   100)
 
         # ── Seuils d'alerte système ───────────────────────────

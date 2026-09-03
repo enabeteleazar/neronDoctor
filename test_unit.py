@@ -1,5 +1,5 @@
 import sys, unittest
-sys.path.insert(0, "/etc/neron")
+sys.path.insert(0, "/etc/neronOS")
 from unittest import mock
 import requests
 
@@ -47,6 +47,72 @@ class FixerTests(unittest.TestCase):
              mock.patch('doctor.fixer._restart_service', return_value={'service':'neron-server','ok':True,'attempts':1,'message':'restarted_and_active'}):
             res = fixer.apply_fixes(report)
             self.assertTrue(any(r.get('ok') for r in res))
+
+class DoctorDoesNotRepairTests(unittest.TestCase):
+    """Doctor analyse, Goal repare.
+
+    Le diagnostic periodique redemarrait des services toutes les 5 min sur un
+    seul echec de sonde. Core, qui met ~25 s a demarrer, etait tue avant
+    d'avoir pu repondre.
+    """
+
+    def setUp(self):
+        fixer._last_restart.clear()
+
+    def test_diagnose_reports_without_restarting(self):
+        report = {'tests': {'server_health': {'ok': False}}}
+
+        with mock.patch('doctor.fixer._restart_service') as restart, \
+             mock.patch('doctor.fixer._seconds_since_start', return_value=None):
+            findings = fixer.diagnose_unhealthy(report)
+
+        restart.assert_not_called()
+        self.assertEqual(findings[0]['service'], 'neron@core')
+        self.assertIsNone(findings[0]['action_taken'])
+        self.assertEqual(findings[0]['recommended_action'], 'restart')
+
+    def test_full_diagnosis_never_repairs(self):
+        """Le chemin reellement emprunte par le timer ne doit pas corriger."""
+        from doctor import runner
+
+        with mock.patch('doctor.fixer._restart_service') as restart, \
+             mock.patch('doctor.runner.analyze_project', return_value={}), \
+             mock.patch('doctor.runner.get_system_metrics', return_value={}), \
+             mock.patch('doctor.runner.get_all_services_status', return_value={}), \
+             mock.patch('doctor.runner.get_all_journal_errors', return_value={}), \
+             mock.patch('doctor.runner.test_services',
+                        return_value={'server_health': {'ok': False}}):
+            report = runner.run_full_diagnosis()
+
+        restart.assert_not_called()
+        self.assertEqual(report['fixes'][0]['message'], 'diagnosed_not_repaired')
+
+    def test_grace_period_blocks_restart(self):
+        """Un service qui demarre n'est pas en faute : il finit son demarrage."""
+        report = {'tests': {'server_health': {'ok': False}}}
+
+        with mock.patch('doctor.fixer._systemctl_available', return_value=True), \
+             mock.patch('doctor.fixer._seconds_since_start', return_value=5.0), \
+             mock.patch('doctor.fixer._restart_service') as restart:
+            fixes = fixer.apply_fixes(report)
+
+        restart.assert_not_called()
+        self.assertIn('grace_period', fixes[0]['message'])
+
+    def test_cooldown_blocks_second_restart(self):
+        report = {'tests': {'server_health': {'ok': False}}}
+        stub = {'service': 'neron@core', 'ok': True, 'attempts': 1, 'message': 'restarted_and_active'}
+
+        with mock.patch('doctor.fixer._systemctl_available', return_value=True), \
+             mock.patch('doctor.fixer._seconds_since_start', return_value=None), \
+             mock.patch('doctor.fixer._restart_service', return_value=stub) as restart:
+            first = fixer.apply_fixes(report)
+            second = fixer.apply_fixes(report)
+
+        self.assertEqual(restart.call_count, 1, "le second redemarrage doit etre refuse")
+        self.assertEqual(first[0]['action_taken'], 'restart')
+        self.assertIn('cooldown', second[0]['message'])
+
 
 # New security tests
 try:

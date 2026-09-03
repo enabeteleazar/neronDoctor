@@ -3,7 +3,7 @@
 
 from doctor.analyzer import analyze_project
 from doctor.tester import test_services
-from doctor.fixer import apply_fixes
+from doctor.fixer import apply_fixes, diagnose_unhealthy
 from doctor.monitor import get_system_metrics, get_all_services_status, get_all_journal_errors
 from doctor.config import cfg
 
@@ -29,10 +29,14 @@ def run_full_diagnosis() -> dict:
     # PHASE 3 - TESTS RUNTIME
     report["tests"] = test_services()
 
-    # PHASE 4 - AUTOCORRECTION
-    report["fixes"] = apply_fixes(report)
+    # PHASE 4 - DIAGNOSTIC (sans correction)
+    # Doctor analyse, Goal repare. Cette phase appelait `apply_fixes` : le
+    # timer de diagnostic redemarrait donc des services toutes les 5 min, sur
+    # un seul echec de sonde. La correction est desormais reservee a un appel
+    # explicite de POST /fixes.
+    report["fixes"] = diagnose_unhealthy(report)
 
-    # PHASE 5 - RE-TEST POST FIX
+    # PHASE 5 - RE-TEST
     report["final_status"] = test_services()
 
     return report
@@ -87,9 +91,9 @@ def stream_diagnosis() -> Generator[str, None, None]:
     except Exception as e:
         yield f"data: {json.dumps({'phase':'tests','error': str(e)})}\n\n"
 
-    # fixes
+    # fixes — diagnostic seul, comme run_full_diagnosis (Doctor ne repare pas)
     try:
-        fixes = apply_fixes({'tests': tests, 'monitor': {'services': services}})
+        fixes = diagnose_unhealthy({'tests': tests, 'monitor': {'services': services}})
         yield f"data: {json.dumps({'phase':'fixes','data': fixes})}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'phase':'fixes','error': str(e)})}\n\n"

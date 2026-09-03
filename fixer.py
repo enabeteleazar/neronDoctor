@@ -1,5 +1,21 @@
 # app/fixer.py
-# Autocorrection améliorée : retry, validation et logs
+# Detection des services en faute, et correction SUR DEMANDE EXPLICITE.
+#
+# Regle d'architecture (documentation de reference) :
+#
+#     Watchdog constate -> Doctor analyse -> Goal repare / construit / evolue
+#
+# Doctor n'est donc pas le reparateur. `diagnose_unhealthy()` est le mode
+# normal : il constate et recommande, sans agir. `apply_fixes()` agit, mais
+# n'est appelee que sur demande explicite (POST /fixes) — jamais par le
+# diagnostic periodique.
+#
+# Historique : `run_full_diagnosis()` appelait `apply_fixes()` a chaque
+# passage du timer (5 min). Un seul echec de sonde suffisait a declencher un
+# `systemctl restart`, sans memoire d'un cycle a l'autre. Core, qui met ~25 s
+# a demarrer et jusqu'a 90 s a s'arreter, etait redemarre avant d'avoir pu
+# repondre : il n'a jamais atteint l'etat sain que le redemarrage cherchait a
+# retablir. D'ou les garde-fous ci-dessous.
 
 import subprocess
 import time
@@ -31,6 +47,58 @@ def _is_active(service: str) -> tuple[bool, str]:
         return False, "systemctl_not_found"
 
 
+def _seconds_since_start(service: str) -> float | None:
+    """Age du service depuis son dernier demarrage, None si indeterminable."""
+    try:
+        out = subprocess.check_output(
+            ["systemctl", "show", service, "--property=ActiveEnterTimestampMonotonic"],
+            text=True, stderr=subprocess.DEVNULL, timeout=10,
+        ).strip()
+    except Exception:
+        return None
+
+    _, _, value = out.partition("=")
+    if not value.isdigit() or value == "0":
+        return None
+
+    try:
+        with open("/proc/uptime", encoding="utf-8") as handle:
+            now_us = float(handle.read().split()[0]) * 1_000_000
+    except Exception:
+        return None
+
+    return max(0.0, (now_us - float(value)) / 1_000_000)
+
+
+# Dernier redemarrage declenche par Doctor, par service (memoire de processus).
+_last_restart: dict[str, float] = {}
+
+
+def _restart_blocked_reason(service: str) -> str | None:
+    """Raison de ne PAS redemarrer, ou None si le redemarrage est legitime.
+
+    Les deux garde-fous se taisent quand l'information manque : ils bornent un
+    comportement, ils ne doivent pas empecher une reparation legitime.
+    """
+    age = _seconds_since_start(service)
+    if age is not None and age < cfg.FIX_GRACE_SECONDS:
+        return (
+            f"grace_period: demarre il y a {age:.0f}s "
+            f"(< {cfg.FIX_GRACE_SECONDS}s) — laisser finir le demarrage"
+        )
+
+    previous = _last_restart.get(service)
+    if previous is not None:
+        elapsed = time.monotonic() - previous
+        if elapsed < cfg.FIX_COOLDOWN_SECONDS:
+            return (
+                f"cooldown: deja redemarre il y a {elapsed:.0f}s "
+                f"(< {cfg.FIX_COOLDOWN_SECONDS}s) — le redemarrage ne corrige rien"
+            )
+
+    return None
+
+
 def _restart_service(service: str) -> dict[str, Any]:
     last_msg = ""
     for attempt in range(1, max(1, cfg.FIX_RETRY_COUNT) + 1):
@@ -56,22 +124,8 @@ def _restart_service(service: str) -> dict[str, Any]:
     return {"service": service, "attempts": cfg.FIX_RETRY_COUNT, "ok": False, "message": f"failed_after_retries: {last_msg}"}
 
 
-def apply_fixes(report: dict) -> list[dict]:
-    """Analyse le rapport de tests/monitor et tente de corriger les services en erreur.
-
-    Stratégie :
-    - Détecte quels services semblent KO à partir des tests HTTP et du monitoring
-    - Pour chaque service détecté, tente un redémarrage avec retry
-    - Vérifie l'état après chaque tentative
-    - Retourne la liste des résultats détaillés
-    """
-    fixes: list[dict] = []
-
-    if not _systemctl_available():
-        msg = "systemctl not available on this host — cannot apply fixes"
-        log.error(msg)
-        return [{"ok": False, "message": msg}]
-
+def _unhealthy_services(report: dict) -> set[str]:
+    """Services juges en faute d'apres les tests HTTP et l'etat systemd."""
     tests = report.get("tests", {}) or {}
     monitor_services = (report.get("monitor", {}) or {}).get("services", {})
 
@@ -109,13 +163,77 @@ def apply_fixes(report: dict) -> list[dict]:
             if isinstance(info, dict) and not info.get("active", False):
                 to_restart.add(svc)
 
+    return to_restart
+
+
+def diagnose_unhealthy(report: dict) -> list[dict]:
+    """Mode NORMAL de Doctor : constater et recommander, sans agir.
+
+    C'est ce qu'appelle le diagnostic periodique. Aucun `systemctl` n'est
+    execute ici : la reparation appartient a Goal.
+    """
+    unhealthy = _unhealthy_services(report)
+
+    if not unhealthy:
+        log.info("No services detected as unhealthy — nothing to report")
+        return [{"ok": True, "message": "no_action_needed"}]
+
+    findings: list[dict] = []
+    for svc in sorted(unhealthy):
+        blocked = _restart_blocked_reason(svc)
+        findings.append({
+            "service": svc,
+            "ok": False,
+            "action_taken": None,
+            "recommended_action": "restart",
+            "advisable_now": blocked is None,
+            "note": blocked,
+            "message": "diagnosed_not_repaired",
+        })
+        log.warning(
+            "Service en faute : %s — recommandation: restart (%s)",
+            svc, blocked or "applicable maintenant",
+        )
+
+    return findings
+
+
+def apply_fixes(report: dict) -> list[dict]:
+    """Correction SUR DEMANDE EXPLICITE (POST /fixes) — pas le mode normal.
+
+    Conserve pour que la capacite de reparation reste disponible tant que Goal
+    ne l'assume pas. Bornee par un delai de grace et un cooldown : un service
+    qui demarre n'est pas redemarre, et un service deja redemarre recemment
+    non plus.
+    """
+    fixes: list[dict] = []
+
+    if not _systemctl_available():
+        msg = "systemctl not available on this host — cannot apply fixes"
+        log.error(msg)
+        return [{"ok": False, "message": msg}]
+
+    to_restart = _unhealthy_services(report)
+
     if not to_restart:
         log.info("No services detected as unhealthy — no fixes applied")
         return [{"ok": True, "message": "no_action_needed"}]
 
-    # 3) Tenter les redémarrages
     for svc in sorted(to_restart):
+        blocked = _restart_blocked_reason(svc)
+        if blocked is not None:
+            log.warning("Redemarrage de %s refuse — %s", svc, blocked)
+            fixes.append({
+                "service": svc,
+                "ok": False,
+                "action_taken": None,
+                "message": f"restart_skipped: {blocked}",
+            })
+            continue
+
+        _last_restart[svc] = time.monotonic()
         result = _restart_service(svc)
+        result["action_taken"] = "restart"
         fixes.append(result)
 
     return fixes
